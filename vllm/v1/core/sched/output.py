@@ -185,10 +185,12 @@ class SchedulerOutput:
     # list of the requests that are scheduled for the first time.
     # We cache the request's data in each worker process, so that we don't
     # need to re-send it every scheduling step.
+    # sykdebug: 首次调度的请求,数据不在 worker 的 KV cache 中,需要从外部 connector 加载 KV cache
     scheduled_new_reqs: list[NewRequestData]
     # list of the requests that have been scheduled before.
     # Since the request's data is already cached in the worker processes,
     # we only send the diff to minimize the communication cost.
+    # sykdebug: 之前调度过的请求，kvcache 已命中，数据已经在 worker 的 KV cache 中，不需要从外部 connector 加载 KV cache
     scheduled_cached_reqs: CachedRequestData
 
     # req_id -> num_scheduled_tokens

@@ -201,6 +201,7 @@ class KVConnectorBase_V1(ABC):
         Args:
             connector_metadata (dict): the connector metadata.
         """
+        logger.info("sykdebug: begin to bind_connector_metadata")
         self._connector_metadata = connector_metadata
 
     def clear_connector_metadata(self) -> None:

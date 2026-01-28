@@ -128,6 +128,7 @@ class KVConnectorFactory:
                     "Please update to include kv_cache_config as the second argument.",
                     connector_cls.__name__,
                 )
+            logger.info(f"sykdebug: during _get_connector_class_with_compat, connector_module={connector_module}, connector_name={connector_name}, connector_cls={connector_cls}")
         return connector_cls, compat_sig
 
     @classmethod

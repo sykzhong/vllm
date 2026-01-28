@@ -768,6 +768,24 @@ def get_attention_context(
     attn_metadata = forward_context.attn_metadata
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata[layer_name]
+    torch.cuda.synchronize()
+    am =  attn_metadata
+    if am is not None and hasattr(am, "slot_mapping") and am.slot_mapping is not None:
+        sm = am.slot_mapping
+        logger.info(
+            "sykdebug: slot_mapping: shape=%s dtype=%s device=%s",
+            tuple(sm.shape), sm.dtype, sm.device
+        )
+        # 打印前 64 个，避免日志爆炸
+        logger.info("sykdebug: slot_mapping[:64]=%s", sm[:64].tolist())
+        logger.info(
+            "sykdebug: min=%s max=%s num_neg=%d",
+            int(sm.min().item()), int(sm.max().item()),
+            int((sm < 0).sum().item()),
+        )
+    else:
+        logger.info("sykdebug: no slot_mapping found on attn_metadata: %s", type(am))
+
     attn_layer: Attention | MLAAttention = forward_context.no_compile_layers[layer_name]
     kv_cache = attn_layer.kv_cache[forward_context.virtual_engine]
     return attn_metadata, attn_layer, kv_cache
@@ -780,6 +798,8 @@ def unified_attention(
     value: torch.Tensor,
     layer_name: str,
 ) -> torch.Tensor:
+    logger.info(f"sykdebug: begin to unified_attention for layer_name={layer_name}")
+    
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
     output = self.impl.forward(self, query, key, value, kv_cache, attn_metadata)
 
@@ -812,8 +832,12 @@ def unified_attention_with_output(
     output_scale: torch.Tensor | None = None,
     output_block_scale: torch.Tensor | None = None,
 ) -> None:
+    
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
-
+    logger.info(f"sykdebug: begin to unified_attention_with_output for layer_name={layer_name}, "
+                f"query.shape={query.shape}, key.shape={key.shape}, value.shape={value.shape}, "
+                f"output.shape={output.shape}")
+    
     self.impl.forward(
         self,
         query,
@@ -846,7 +870,7 @@ direct_register_custom_op(
     fake_impl=unified_attention_with_output_fake,
 )
 
-
+# sykdebug: 在装饰器这里进行了kvcache的加载
 @maybe_transfer_kv_layer
 def unified_mla_attention(
     q: torch.Tensor,
@@ -854,6 +878,7 @@ def unified_mla_attention(
     k_pe: torch.Tensor,
     layer_name: str,
 ) -> torch.Tensor:
+    logger.info(f"sykdebug: begin to unified_mla_attetion for layer_name={layer_name}")
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
     output = self.impl.forward(self, q, kv_c_normed, k_pe, kv_cache, attn_metadata)
 
@@ -888,6 +913,7 @@ def unified_mla_attention_with_output(
     output_scale: torch.Tensor | None = None,
     output_block_scale: torch.Tensor | None = None,
 ) -> None:
+    logger.info(f"sykdebug: begin to unified_mla_attention_with_output for layer_name={layer_name}")
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
     self.impl.forward(
         self,

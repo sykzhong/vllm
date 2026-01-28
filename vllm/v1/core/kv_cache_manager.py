@@ -192,6 +192,8 @@ class KVCacheManager:
                 request.block_hashes, max_cache_hit_length
             )
         )
+        logger.info(f"sykdebug: during get_computed_blocks, for req.request_id={request.request_id}, num_tokens={request.num_tokens}, "
+                    f"num_new_computed_tokens={num_new_computed_tokens}")
 
         if self.log_stats:
             assert self.prefix_cache_stats is not None
@@ -285,6 +287,13 @@ class KVCacheManager:
         Returns:
             A list of new allocated blocks.
         """
+         # sykdebug: 添加日志，追踪allocate_slots时的token计数
+        logger.info(f"sykdebug: allocate_slots, req_id={request.request_id}, "
+                   f"num_new_tokens={num_new_tokens}, "
+                   f"num_new_computed_tokens={num_new_computed_tokens}, "
+                   f"num_external_computed_tokens={num_external_computed_tokens}, "
+                   f"request.num_computed_tokens={request.num_computed_tokens}, "
+                   f"request.num_tokens={request.num_tokens}")
         # When loading KV data asynchronously, we may have zero new tokens to
         # compute while still allocating slots for externally computed tokens.
         if num_new_tokens == 0 and num_external_computed_tokens == 0:

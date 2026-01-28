@@ -2620,6 +2620,12 @@ class GPUModelRunner(
         dict[str, Any],
         ECConnectorOutput | None,
     ]:
+        # sykdebug: 添加日志，追踪preprocess时的状态
+        for req_id, req in self.requests.items():
+            logger.info(f"sykdebug: _preprocess, req_id={req_id}, "
+                       f"num_computed_tokens={req.num_computed_tokens}, "
+                       f"req.num_tokens={req.num_tokens}")
+
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         is_first_rank = get_pp_group().is_first_rank
         is_encoder_decoder = self.model_config.is_encoder_decoder
@@ -3297,6 +3303,23 @@ class GPUModelRunner(
             record_function_or_nullcontext("gpu_model_runner: forward"),
             self.maybe_get_kv_connector_output(scheduler_output) as kv_connector_output,
         ):
+            """ sykdebug """
+            x = input_ids  # 或 model_input.input_ids
+            # 只在 decode，且发现负数才打印，避免刷屏
+            if (x < 0).any():
+                import torch
+                torch.cuda.synchronize()
+                logger.error("sykdebug: decode model_input.input_tokens shape=%s dtype=%s device=%s",
+                            tuple(x.shape), x.dtype, x.device)
+                logger.error("sykdebug: input_tokens=%s", x.detach().cpu().tolist())
+                bad = (x < 0).nonzero().flatten()
+                logger.error("sykdebug: bad_pos=%s bad_vals=%s",
+                            bad.detach().cpu().tolist(),
+                            x[bad].detach().cpu().tolist())
+                # 同时打印这轮 batch 的 request/seq 标识
+                logger.error("sykdebug: req_ids=%s", req_ids)
+            """ sykdebug """
+            
             model_output = self._model_forward(
                 input_ids=input_ids,
                 positions=positions,

@@ -361,7 +361,7 @@ class WorkerWrapperBase:
         self, scheduler_output: SchedulerOutput
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
         self._apply_mm_cache(scheduler_output)
-
+        logger.info(f"sykdebug: begin to execute_model, scheduler_output={scheduler_output}")
         return self.worker.execute_model(scheduler_output)
 
     def reset_mm_cache(self) -> None:

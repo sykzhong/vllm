@@ -399,6 +399,7 @@ class Worker(WorkerBase):
         # NOTE(Kuntai): This need to be done before `initialize_kv_cache`,
         # because `initialize_kv_cache` will inject kv cache groups not
         # related to kv cache connector (e.g. kv cache sharing layers).
+        logger.info("sykdebug: for worker, begin to ensure/create kvConnector")
         ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
 
         if self.vllm_config.model_config.enable_sleep_mode:

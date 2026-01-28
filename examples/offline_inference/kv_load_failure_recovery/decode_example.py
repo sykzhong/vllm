@@ -2,8 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import argparse
 
+from vllm.logger import init_logger
+
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
+
+logger = init_logger(__name__)
 
 
 def read_prompts():
@@ -34,6 +38,7 @@ def main():
     args = parser.parse_args()
 
     if args.simulate_failure:
+        logger.info(f"sykdebug: args.simulate_failure={args.simulate_failure}, args.async_load={args.async_load}")
         ktc = KVTransferConfig(
             kv_connector="LoadRecoveryExampleConnector",
             kv_role="kv_both",
@@ -59,12 +64,13 @@ def main():
         out_file = "decode_output.txt"
 
     llm = LLM(
-        model="meta-llama/Llama-3.2-1B-Instruct",
+        model="/root/shiyukun/models/Qwen/Qwen3-0.6B",
         enforce_eager=True,
         gpu_memory_utilization=0.8,
         max_num_batched_tokens=64,
         max_num_seqs=16,
         kv_transfer_config=ktc,
+        async_scheduling=args.async_load,
     )
 
     outputs = llm.generate(prompts, sampling_params)

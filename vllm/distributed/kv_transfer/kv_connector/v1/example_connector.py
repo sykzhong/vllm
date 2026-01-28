@@ -47,7 +47,10 @@ class ReqMeta:
         is_store: bool,
         mm_hashes: list[str],
     ) -> "ReqMeta":
+        # sykdebug: 这里对要存储的token进行了截断，仅保留整数倍的block_size对应的token
         valid_num_tokens = align_to_block_size(len(token_ids), block_size)
+        logger.info(f"sykdebug: during make_meta for req during connector, org len(token_ids)={len(token_ids)}, "
+                    f" valid_num_tokens={valid_num_tokens}")
         token_ids_tensor = torch.tensor(token_ids)[:valid_num_tokens]
         block_ids_tensor = torch.tensor(block_ids)
         num_blocks = block_ids_tensor.shape[0]
@@ -77,6 +80,8 @@ class ExampleConnectorMetadata(KVConnectorMetadata):
         is_store: bool,
         mm_hashes: list[str],
     ) -> None:
+        logger.info(f"sykdebug: begin to add request to connector, len(token_ids)={len(token_ids)}, "
+                    f"len(block_ids)={len(block_ids)}, block_size={block_size}, is_store={is_store}, len(mm_hashes)=len({mm_hashes})")
         self.requests.append(
             ReqMeta.make_meta(token_ids, block_ids, block_size, is_store, mm_hashes)
         )
@@ -104,6 +109,7 @@ class ExampleConnector(KVConnectorBase_V1):
         self._storage_path = self._kv_transfer_config.get_from_extra_config(
             "shared_storage_path", "/tmp"
         )
+        logger.info("sykdebug: begin to init ExampleConnector, _block_size=%d", self._block_size)
         logger.info(self._kv_transfer_config)
         logger.info("Shared storage path is %s", self._storage_path)
 
@@ -120,6 +126,7 @@ class ExampleConnector(KVConnectorBase_V1):
             The number of elements in kv_caches and layer_names should be
             the same.
         """
+        logger.info("sykdebug: begin start_load_kv, forward_context.virtual_engine=%d", forward_context.virtual_engine)
         # sykdebug: 支持内部定义的函数的闭包使用
         attn_metadata = forward_context.attn_metadata
 
@@ -179,8 +186,10 @@ class ExampleConnector(KVConnectorBase_V1):
 
         # Load the KV for each request each layer
         # sykdebug: requests可能包含store和load对象，这里是对load对象的处理
+        logger.info(f"sykdebug: begin to load requests from metadata and inject kvcache. len(metadata.requests)={len(metadata.requests)}")
         for request in metadata.requests:
             if request.is_store:
+                # sykdebug: 如果是scheduler的首次kvcache运算，标记为了is_store，就会跳过load阶段
                 continue
             logger.info(
                 "Inject KV cache of %d tokens to the paged memory",
@@ -206,6 +215,7 @@ class ExampleConnector(KVConnectorBase_V1):
                 filename = self._generate_filename_debug(
                     layer_name, request.token_ids, request.mm_hashes
                 )
+                logger.info(f"sykdebug: begin to load kvcache for layer_name={layer_name}, filename={filename}" )
                 kv_cache = safetensors.torch.load_file(filename)["kv_cache"].cuda()
                 inject_kv_into_layer(kv_cache_layer, kv_cache, request.slot_mapping)
 
@@ -218,6 +228,7 @@ class ExampleConnector(KVConnectorBase_V1):
         Args:
             layer_name: the name of that layer
         """
+        logger.info("sykdebug: skip wait_for_layer_load in example_connector")
         # sykdebug: example中的kvcache load环节是同步的，完成即保障已经加载完；实际load过程可以是异步的，则这里需要进行阻塞判断，保障每一层都被加载完
         return
 
@@ -261,11 +272,15 @@ class ExampleConnector(KVConnectorBase_V1):
                 filename = self._generate_filename_debug(
                     layer_name, request.token_ids, request.mm_hashes
                 )
+                logger.info(f"sykdebug: begin save_kv_layer, layer_name={layer_name}, request for connector_metadata, "
+                            f"len(request.token_ids)={len(request.token_ids)}, request.is_store={request.is_store}, filename={filename}")
                 kv_cache = extract_kv_from_layer(kv_layer, request.slot_mapping)
                 tensors = {"kv_cache": kv_cache.detach().cpu()}
                 safetensors.torch.save_file(tensors, filename)
 
     def wait_for_save(self):
+        logger.info("sykdebug: skip wait_for_save")
+            
         return
 
     def get_num_new_matched_tokens(
@@ -302,7 +317,7 @@ class ExampleConnector(KVConnectorBase_V1):
         # the metadata for the worker connector to correctly load the KV
         token_ids = request.prompt_token_ids or []
         num_tokens_to_check = align_to_block_size(len(token_ids) - 1, self._block_size)
-
+        logger.info(f"sykdebug: num_tokens_to_check={num_tokens_to_check}, num_computed_tokens={num_computed_tokens}")
         return num_tokens_to_check - num_computed_tokens, False
 
     def update_state_after_alloc(
@@ -315,6 +330,7 @@ class ExampleConnector(KVConnectorBase_V1):
         such that we load the KVs in the next forward pass.
         """
         if num_external_tokens > 0:
+            logger.info(f"sykdebug: during update_stat_after_alloc, for request_id={request.request_id}, need_load")
             self._requests_need_load[request.request_id] = request
 
     def build_connector_meta(
@@ -335,8 +351,11 @@ class ExampleConnector(KVConnectorBase_V1):
         for new_req in scheduler_output.scheduled_new_reqs:
             token_ids = new_req.prompt_token_ids or []
             mm_hashes = [f.identifier for f in new_req.mm_features]
-            # sykdebug: 新请求的加载操作
+            # sykdebug: 新请求的加载操作，从外部提取prompt tokens,
             if new_req.req_id in self._requests_need_load:
+                logger.info(f"sykdebug: in scheduler_output.scheduled_new_reqs, "
+                            f"new_req.req_id={new_req.req_id} in _requests_need_load, "
+                            f"begin to add_requests to connector metadata. for load.")
                 meta.add_request(
                     token_ids=token_ids,
                     block_ids=new_req.block_ids[0],
@@ -350,8 +369,11 @@ class ExampleConnector(KVConnectorBase_V1):
                 # but a single request can have both store and load.
                 # NOTE(rob): for this debug implementation, we only cache
                 # the original prompt tokens.
-                # sykdebug: 新请求的存储操作
+                # sykdebug: 新请求connector中没命中，则将本地计算的prompt + generated tokens存储到connector
                 if not self._found_match_for_prompt(token_ids, mm_hashes):
+                    logger.info(f"sykdebug: in scheduler_output.scheduled_new_reqs, "
+                                f"new_req.req_id={new_req.req_id} not in _requests_need_load, "
+                                f"and not _found_match_for_prompt, begin to add_requests to connector metadata. for store.")
                     meta.add_request(
                         token_ids=token_ids,
                         block_ids=new_req.block_ids[0],
@@ -359,10 +381,19 @@ class ExampleConnector(KVConnectorBase_V1):
                         is_store=True,
                         mm_hashes=mm_hashes,
                     )
+                else:
+                    logger.info(f"sykdebug: in scheduler_output.scheduled_new_reqs, "
+                                    f"new_req.req_id={new_req.req_id} not in _requests_need_load, "
+                                    f"and _found_match_for_prompt, will not load or store")
+                    
 
+        # sykdebug: 这里非新的req，而是之前已经调度过的req，且命中了kv
         cached_reqs = scheduler_output.scheduled_cached_reqs
         for i, req_id in enumerate(cached_reqs.req_ids):
             resumed_from_preemption = req_id in cached_reqs.resumed_req_ids
+            # sykdebug: 这里相当于kv缓存命中了。
+            logger.info(f"sykdebug: in scheduler_output.scheduled_cached_reqs, "
+                        f"req_id={req_id}, resumed_from_preemption={resumed_from_preemption}")
             if not resumed_from_preemption or req_id not in self._requests_need_load:
                 continue
 
@@ -381,7 +412,7 @@ class ExampleConnector(KVConnectorBase_V1):
             # of the block_ids for the request.
             assert new_block_ids is not None
             block_ids = new_block_ids[0]
-
+            
             meta.add_request(
                 token_ids=token_ids,
                 block_ids=block_ids,

@@ -118,6 +118,7 @@ class Scheduler(SchedulerInterface):
             assert not self.is_encoder_decoder, (
                 "Encoder-decoder models are not currently supported with KV connectors"
             )
+            logger.info("sykdebug: for scheduler, begin to create kvConnector")
             self.connector = KVConnectorFactory.create_connector(
                 config=self.vllm_config,
                 role=KVConnectorRole.SCHEDULER,
@@ -261,6 +262,8 @@ class Scheduler(SchedulerInterface):
         # num_tokens_with_spec. This is general enough to cover
         # chunked prefills, prefix caching, speculative decoding,
         # and the "jump decoding" optimization in the future.
+        
+        logger.info(f"begin to schedule, len(running)={len(self.running)}, len(waiting)={len(self.waiting)}")
 
         scheduled_new_reqs: list[Request] = []
         scheduled_resumed_reqs: list[Request] = []
@@ -283,6 +286,7 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            logger.info(f"sykdebug: begin to schedule the running request.req_id={request.request_id}")
 
             # do not schedule another step for the same request while it still has
             # output placeholders for PP.
@@ -473,6 +477,7 @@ class Scheduler(SchedulerInterface):
                     break
 
                 request = self.waiting.peek_request()
+                logger.info(f"sykdebug: begin to schedule the waiting request.req_id={request.request_id}")
 
                 # KVTransfer: skip request if still waiting for remote kvs.
                 # sykdebug: 调度检查请求的kvcache是否已经记载完全，加载好了才可以调度
@@ -526,17 +531,26 @@ class Scheduler(SchedulerInterface):
                 # Get already-cached tokens.
                 if request.num_computed_tokens == 0:
                     # Get locally-cached tokens.
+                    # sykdebug: num_new_local_computed_tokens 表示本地kvcache中已有的token数量
                     new_computed_blocks, num_new_local_computed_tokens = (
                         self.kv_cache_manager.get_computed_blocks(request)
                     )
 
                     # Get externally-cached tokens if using a KVConnector.
                     if self.connector is not None:
+                        # sykdebug: scheduler的kvconnector用于计算有多少的token可以通过connector加载，不需要重新计算
                         ext_tokens, load_kv_async = (
+                            # sykdebug: 以exampleConnector为例，ext_tokens表示connector中已经存有的token总数，减本地cache中已有的token数量。
+                            # sykdebug: 则ext_token表示connector中已有的token，即远程已缓存的kv数量。可以被重新补充进kvcache，不需要计算
                             self.connector.get_num_new_matched_tokens(
                                 request, num_new_local_computed_tokens
                             )
                         )
+                        logger.info(f"sykdebug: connector is not none, request.id={request.request_id}, num_computed_tokens==0, "
+                                    f"len(request.all_token_ids)={len(request.all_token_ids)}, ext_tokens={ext_tokens}, "
+                                    f"load_kv_async={load_kv_async}")
+                        if len(request.all_token_ids) > 16:
+                            logger.info(f"sykdebug: for request.id={request.request_id}, request.all_token_ids[-16:]={request.all_token_ids[-16:]}")
 
                         if ext_tokens is None:
                             # The request cannot be scheduled because
@@ -649,6 +663,8 @@ class Scheduler(SchedulerInterface):
                 # This information is used to determine if a load is
                 # needed for this request.
                 if self.connector is not None:
+                    logger.info(f"sykdebug: for scheduler, request.request_id={request.request_id}, ext_token={num_external_computed_tokens}, "
+                                f"update to scheduler.connector")
                     self.connector.update_state_after_alloc(
                         request,
                         self.kv_cache_manager.get_blocks(request.request_id),
@@ -790,6 +806,7 @@ class Scheduler(SchedulerInterface):
         # 2. Wrap up all the KV cache load / save ops into an opaque object
         # 3. Clear the internal states of the connector
         if self.connector is not None:
+            logger.info(f"sykdebug: in scheduler, begin to build_connector_meta")
             meta: KVConnectorMetadata = self.connector.build_connector_meta(
                 scheduler_output
             )
@@ -804,6 +821,7 @@ class Scheduler(SchedulerInterface):
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
+        logger.info(f"sykdebug: end schedule, return scheduler_output")
         return scheduler_output
 
     def _preempt_request(self, request: Request, timestamp: float) -> None:
@@ -840,8 +858,14 @@ class Scheduler(SchedulerInterface):
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
         for req_id, num_scheduled_token in num_scheduled_tokens.items():
             request = self.requests[req_id]
+            old_num_computed = request.num_computed_tokens
             request.num_computed_tokens += num_scheduled_token
-
+            # sykdebug: 添加日志...
+            logger.info(f"sykdebug: _update_after_schedule, req_id={req_id}, "
+                f"old_num_computed={old_num_computed}, "
+                f"num_scheduled_token={num_scheduled_token}, "
+                f"new_num_computed={request.num_computed_tokens}, "
+                f"req.num_tokens={request.num_tokens}")
             # NOTE: _free_encoder_inputs relies on num_computed_tokens, which
             # may be updated again in _update_from_output for speculative
             # decoding. However, it is safe to call the method here because
@@ -898,6 +922,7 @@ class Scheduler(SchedulerInterface):
                 req_to_new_blocks[req_id].get_block_ids(allow_none=True)
             )
             num_computed_tokens.append(req.num_computed_tokens)
+            logger.info(f"sykdebug: for req_id={req_id}, num_output_tokens={req.num_output_tokens}, num_output_placeholders={req.num_output_placeholders}")
             num_output_tokens.append(
                 req.num_output_tokens + req.num_output_placeholders
             )
@@ -1357,6 +1382,8 @@ class Scheduler(SchedulerInterface):
             block_offsets.reshape((1, block_size))
             + block_ids_array.reshape((num_blocks, 1)) * block_size
         ).flatten()[:num_tokens]
+        
+        logger.info(f"sykdebug: during _get_routed_experts, request.req_id={request.request_id}, slot_mapping={slot_mapping}")
 
         return self.routed_experts_reader.get_routed_experts(indices=slot_mapping)
 
@@ -1721,6 +1748,9 @@ class Scheduler(SchedulerInterface):
         WAITING_FOR_REMOTE_KV.
         """
         assert self.connector is not None
+        logger.info(f"sykdebug: begin _update_waiting_for_remote_kv, request_id={request.request_id}, "
+                    f"self.finished_recving_kv_req_ids={self.finished_recving_kv_req_ids}, "
+                    f"self.failed_recving_kv_req_ids={self.failed_recving_kv_req_ids}")
         if request.request_id not in self.finished_recving_kv_req_ids:
             return False
 
@@ -1806,6 +1836,8 @@ class Scheduler(SchedulerInterface):
                 - blocks_to_evict (set[int]): Block IDs to evict from cache,
                 including invalid blocks and downstream dependent blocks.
         """
+        logger.info(f"sykdebug: begin _update_requests_with_invalid_blocks, invalid_block_ids={invalid_block_ids}")
+                    
         affected_req_ids: set[str] = set()
         total_affected_tokens = 0
         blocks_to_evict: set[int] = set()
@@ -1840,6 +1872,9 @@ class Scheduler(SchedulerInterface):
                 if block_id not in invalid_block_ids:
                     continue
 
+                logger.info(f"sykdebug: during _update_requests_with_invalid_blocks, "
+                            f"for req={request.request_id}, block_id={block_id}, "
+                            f"in invalid_block_ids, set is_affected=true")
                 is_affected = True
 
                 if block_id in marked_invalid_block_ids:
@@ -1859,6 +1894,10 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 marked_invalid_block = True
+                
+                logger.info(f"sykdebug: during _update_requests_with_invalid_blocks, "
+                            f"for req={request.request_id}, marked_invalid_block_ids={marked_invalid_block_ids}, "
+                            f"marked_invalid_block={marked_invalid_block}")
                 # Truncate the computed tokens at the first failed block
                 request.num_computed_tokens = idx * self.block_size
                 num_affected_tokens = (
@@ -1872,6 +1911,7 @@ class Scheduler(SchedulerInterface):
 
             if is_affected:
                 if not marked_invalid_block:
+                    # sykdebug: 怀疑这里导致了kvconnector失败的共享的req没有办法被正常跳过
                     # All invalid blocks of this request are shared with
                     # previous requests and will be recomputed by them.
                     # Revert to considering only cached tokens as computed.
@@ -1881,7 +1921,15 @@ class Scheduler(SchedulerInterface):
                         request.num_computed_tokens - request.num_cached_tokens
                     )
                     request.num_computed_tokens = request.num_cached_tokens
-
+                    logger.info(f"sykdebug: during _update_requests_with_invalid_blocks, "
+                                f"for req_id={request.request_id}, is_affected={is_affected}, "
+                                f"marked_invalid_block={marked_invalid_block}, "
+                                f"set num_computed_tokens to num_cached_tokens={request.num_computed_tokens}")
+                else:
+                    logger.info(f"sykdebug: during _update_requests_with_invalid_blocks, "
+                                f"for req_id={request.request_id}, is_affected={is_affected}, "
+                                f"marked_invalid_block={marked_invalid_block}, "
+                                f"num_computed_tokens={request.num_computed_tokens}")
                 affected_req_ids.add(request.request_id)
 
         return affected_req_ids, total_affected_tokens, blocks_to_evict
@@ -1893,6 +1941,7 @@ class Scheduler(SchedulerInterface):
         Returns:
             Set of affected request IDs to skip in update_from_output main loop.
         """
+        logger.info(f"sykdebug: begin to _handle_invalid_blocks, invalid_block_ids={invalid_block_ids}")
         should_fail = not self.recompute_kv_load_failures
 
         # handle async KV loads (not cached yet, evict_blocks=False)
@@ -1916,6 +1965,8 @@ class Scheduler(SchedulerInterface):
                 self.running, invalid_block_ids, evict_blocks=True
             )
         )
+        logger.info(f"sykdebug: during _handle_invalid_blocks, sync_failed_req_ids={sync_failed_req_ids}, "
+                    f"num_failed_tokens={num_failed_tokens}")
 
         total_failed_requests += len(sync_failed_req_ids)
         total_failed_tokens += num_failed_tokens

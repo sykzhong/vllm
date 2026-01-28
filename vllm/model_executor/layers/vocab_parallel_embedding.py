@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from vllm.logger import init_logger
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -24,6 +25,8 @@ from vllm.model_executor.layers.utils import dispatch_unquantized_gemm
 from vllm.model_executor.parameter import BasevLLMParameter
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
+
+logger = init_logger(__name__)
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
 
@@ -474,6 +477,59 @@ class VocabParallelEmbedding(CustomOp):
             )
         else:
             masked_input = input_
+            
+        # ======== sykdebug: add checks right before embedding() ========
+        import torch
+        # vocab_size 是 embedding weight 的第 0 维
+        vocab_size = int(self.weight.shape[0])  # 或 layer.weight.shape[0]
+
+        # 先同步一下，把“更早的错误”先抛出来（你现在开了 CUDA_LAUNCH_BLOCKING=1 时可选）
+        torch.cuda.synchronize()
+
+        x = masked_input
+        # 注意：下面这些会触发同步（item），但现在就是要定位，没问题
+        xmin = int(x.min().item())
+        xmax = int(x.max().item())
+        num_neg = int((x < 0).sum().item())
+        num_ge = int((x >= vocab_size).sum().item())
+
+
+        logger.info(
+            "sykdebug: embedding indices stats: tp_size=%d shape=%s dtype=%s device=%s "
+            "vocab_size=%d min=%d max=%d num_neg=%d num_ge_vocab=%d",
+            self.tp_size, tuple(x.shape), x.dtype, x.device,
+            vocab_size, xmin, xmax, num_neg, num_ge
+        )
+
+        if self.tp_size > 1:
+            # input_mask=True 的位置最后会被 masked_fill_ 置零，但注意：embedding 之前 index 仍必须合法
+            logger.info(
+                "sykdebug: input_mask stats: shape=%s dtype=%s device=%s num_true=%d",
+                tuple(input_mask.shape), input_mask.dtype, input_mask.device,
+                int(input_mask.sum().item())
+            )
+            
+        # 直接打印输入的token
+        logger.info("sykdebug: input_ full=%s", input_.tolist())
+
+        # 如果有坏 token，打印前几个并直接中断（避免进入 embedding 触发 device assert）
+        if num_neg or num_ge:
+            bad = (x < 0) | (x >= vocab_size)
+            bad_idx = bad.nonzero()
+            logger.error("sykdebug: first_bad_indices=%s", bad_idx[:10].tolist())
+            logger.error("sykdebug: first_bad_values=%s", x[bad][:10].tolist())
+
+            # 可选：也看看原始 input_ 是否已经坏了
+            x0 = input_
+            logger.error(
+                "sykdebug: original input_ stats: min=%d max=%d num_neg=%d",
+                int(x0.min().item()), int(x0.max().item()), int((x0 < 0).sum().item())
+            )
+
+            raise RuntimeError("Invalid token ids before embedding()")
+
+        # ======== end sykdebug ========
+        
         # Get the embeddings.
         output_parallel = self.quant_method.embedding(self, masked_input.long())
         # Mask the output embedding.

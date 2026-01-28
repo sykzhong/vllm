@@ -87,6 +87,7 @@ class KVConnectorModelRunnerMixin:
         kv_connector = get_kv_transfer_group()
         assert isinstance(kv_connector, KVConnectorBase)
         assert scheduler_output.kv_connector_metadata is not None
+        logger.info("sykdebug: for worker, begin to bind scheduler_output.kv_connector_metadata, ")
         kv_connector.bind_connector_metadata(scheduler_output.kv_connector_metadata)
 
         # Background KV cache transfers happen here.

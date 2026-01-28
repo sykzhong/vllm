@@ -1,0 +1,18 @@
+我正在运行 vllm load_recovery_example_connector的示例，想观察当kvconnector在decode进行load的期间，加载失败（metadata相关信息故意丢失）的情况下，kvcache时候还能正常运行；预期是能正常运行，但实际却报错了，核心错误在于多轮推理后，当要进行多条req(0 1 2)的综合推理的时候，出现了token_id=-1的推理任务；帮我分析下这个问题的来龙去脉，以及应该如何解决；另外这是个官方用例，我怀疑可能是我区别于master分支的改动引入了bug，另外我希望改动尽可能局限于kv_load_failure_recovery中（当然如果你很确认问题在于其他地方的话也欢迎直接修改）
+
+
+我根据上述建议，通过注释操作，进行了修复；从第5892行日志看，req1在第二次进入推理，已经确认有block是invalid的情况下，num_computed_tokens=0了，说明结果上实现了kvconnector失效场景下，不同req共享的kvcache也会触发重新计算了 #tmp_failure_sync (12).log 5892-5892 
+
+但是，推理过程仍然失败，参见 #tmp_failure_sync (12).log 5911-5912 ，仍然有两个token为-1的情况出现
+
+接下来我提出一种导致上述错误的可能性，麻烦你帮我纠正错漏；我怀疑上面之所以出现两个-1的token，是将req0的长度从1006误认为1008，导致多取了两个无效的token
+
+查484行，可见初次推理的时候，req0的num_tokens=1006，此时应该为num_promt_tokens=1006, output_token_ids=0
+
+查979行，可见第二次推理，req.num_tokens=1007，即这里认为output_token_ids=1；这处逻辑是否有误？因为初次推理虽然完成了，但是由于kvconnector失败，实际上req0 前992个token的kvcache为空，推理后的结果实际应该不可用；但是这里好像仍然把output_token给纳入其中了；
+
+查1504行，第三次推理开始的时候，req.num_tokens=1008，说明第二次推理的结果也给推入output_token中了，同样的我认为这个过程应该是错误的。第二次推理后，命中了_handle_invalid_blocks(参见1494行)，因此从第三次开始，req0已经认知到自己的kvcache不全，因此后续的推理，不在更新output_token
+
+但是若干轮推理以后，参见5901行，req0尝试从960 token开始推理，尝试纳入了48个token，达到1008的长度，这里是否就是明显有问题了；逻辑上应该只有1006才对，多出来的两个无效token导致了失败。
+
+帮我分析下我上述的判断是否正确，是否就是num_tokens的运算错误导致了推理的失败？如果逻辑链路无问题的话，告知我引起该问题的大致的代码段，我应该如何修复？
