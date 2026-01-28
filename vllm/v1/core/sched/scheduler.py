@@ -475,6 +475,7 @@ class Scheduler(SchedulerInterface):
                 request = self.waiting.peek_request()
 
                 # KVTransfer: skip request if still waiting for remote kvs.
+                # sykdebug: 调度检查请求的kvcache是否已经记载完全，加载好了才可以调度
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
                     is_ready = self._update_waiting_for_remote_kv(request)
                     if is_ready:

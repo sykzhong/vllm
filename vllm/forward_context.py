@@ -185,6 +185,7 @@ class DPMetadata:
 
 
 @dataclass
+# sykdebug: 单词前向传播的上下文信息容器
 class ForwardContext:
     # copy from vllm_config.compilation_config.static_forward_context
     no_compile_layers: dict[str, Any]

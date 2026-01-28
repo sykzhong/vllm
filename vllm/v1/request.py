@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
     from vllm.v1.core.kv_cache_utils import BlockHash
 
-
+# sykdebug: 单个推理请求的核心数据结构，包含从请求到达、处理、完成的所有信息
 class Request:
     def __init__(
         self,

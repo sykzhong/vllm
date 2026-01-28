@@ -19,6 +19,7 @@ from vllm.utils.hashing import safe_hash
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 
+# sykdebug: 在其他文件中的类型说明，需要用双引号
 if TYPE_CHECKING:
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -106,6 +107,7 @@ class ExampleConnector(KVConnectorBase_V1):
         logger.info(self._kv_transfer_config)
         logger.info("Shared storage path is %s", self._storage_path)
 
+    # sykdebug: 在模型前向传播之前启动 kvcache 加载；而且这里是同步的阻塞的行为，意味着执行，就已经完成了kvcache的加载
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         """Start loading the KV cache from the connector buffer to vLLM's
         paged KV buffer.
@@ -118,6 +120,7 @@ class ExampleConnector(KVConnectorBase_V1):
             The number of elements in kv_caches and layer_names should be
             the same.
         """
+        # sykdebug: 支持内部定义的函数的闭包使用
         attn_metadata = forward_context.attn_metadata
 
         def inject_kv_into_layer(
@@ -137,7 +140,9 @@ class ExampleConnector(KVConnectorBase_V1):
                 slot_mapping (torch.Tensor): the slot mapping. In shape
                     [num_tokens].
             """
+            # sykdebug: 以MHA为例，shape的语义是：2表示k/v num_pages表示block_id page_size表示token或者slot_id，xxx表示num_heads*head_dim
             dst_kv_cache_layer_shape = dst_kv_cache_layer.shape
+            # sykdebug: 多头潜在注意力，用于kvcache的压缩
             if isinstance(attn_metadata, MLACommonMetadata):
                 num_pages = dst_kv_cache_layer_shape[0]
                 page_size = dst_kv_cache_layer_shape[1]
@@ -147,6 +152,7 @@ class ExampleConnector(KVConnectorBase_V1):
                 dst_kv_cache_layer[slot_mapping, ...] = src_kv_cache
                 dst_kv_cache_layer.reshape(dst_kv_cache_layer_shape)
             else:
+                # sykdebug: 这里进行了扁平化，方便直接通过slot_mapping进行检索
                 num_pages = dst_kv_cache_layer_shape[1]
                 page_size = dst_kv_cache_layer_shape[2]
                 dst_kv_cache_layer = dst_kv_cache_layer.reshape(
@@ -155,6 +161,7 @@ class ExampleConnector(KVConnectorBase_V1):
                 dst_kv_cache_layer[:, slot_mapping, ...] = src_kv_cache
                 dst_kv_cache_layer.reshape(dst_kv_cache_layer_shape)
 
+        # sykdebug: 在模型执行前的上下文管理器中，会调用bind_connector_metadata，加载scheduler传出的metadata
         # Get the metadata
         metadata: KVConnectorMetadata = self._get_connector_metadata()
         assert isinstance(metadata, ExampleConnectorMetadata)
@@ -171,6 +178,7 @@ class ExampleConnector(KVConnectorBase_V1):
             return
 
         # Load the KV for each request each layer
+        # sykdebug: requests可能包含store和load对象，这里是对load对象的处理
         for request in metadata.requests:
             if request.is_store:
                 continue
@@ -179,6 +187,7 @@ class ExampleConnector(KVConnectorBase_V1):
                 len(request.slot_mapping),
             )
             for layer_name in forward_context.no_compile_layers:
+                # sykdebug: layer_name实际包含了层号
                 layer = forward_context.no_compile_layers[layer_name]
 
                 # Only process layers that have kv_cache
@@ -188,6 +197,10 @@ class ExampleConnector(KVConnectorBase_V1):
                 if kv_cache_attr is None:
                     continue
 
+                # sykdebug: 这里根据虚拟引擎编号，直接获取了kv_cache的目标注入位置
+                # sykdebug: virtual_engine表示的是纵向切割后，对应的流水线阶段; 
+                # sykdebug: 如果对应的virtual_engine设备并不处理对应层号，则这里取出的kv_cache_layer可能是空的或者无用的; 
+                # sykdebug: 于是这里只会加载当前设备所需要处理的kv对象
                 kv_cache_layer = kv_cache_attr[forward_context.virtual_engine]
 
                 filename = self._generate_filename_debug(
@@ -205,6 +218,7 @@ class ExampleConnector(KVConnectorBase_V1):
         Args:
             layer_name: the name of that layer
         """
+        # sykdebug: example中的kvcache load环节是同步的，完成即保障已经加载完；实际load过程可以是异步的，则这里需要进行阻塞判断，保障每一层都被加载完
         return
 
     def save_kv_layer(
@@ -321,6 +335,7 @@ class ExampleConnector(KVConnectorBase_V1):
         for new_req in scheduler_output.scheduled_new_reqs:
             token_ids = new_req.prompt_token_ids or []
             mm_hashes = [f.identifier for f in new_req.mm_features]
+            # sykdebug: 新请求的加载操作
             if new_req.req_id in self._requests_need_load:
                 meta.add_request(
                     token_ids=token_ids,
@@ -335,6 +350,7 @@ class ExampleConnector(KVConnectorBase_V1):
                 # but a single request can have both store and load.
                 # NOTE(rob): for this debug implementation, we only cache
                 # the original prompt tokens.
+                # sykdebug: 新请求的存储操作
                 if not self._found_match_for_prompt(token_ids, mm_hashes):
                     meta.add_request(
                         token_ids=token_ids,
@@ -388,6 +404,7 @@ class ExampleConnector(KVConnectorBase_V1):
         request: "Request",
     ) -> bool:
         """Check if the cache is hit for the request."""
+        # sykdebug: 这里只能根据prompt的token数量复用其中block_size整数倍的kvcache，多出的长尾需要重复计算
         return self._found_match_for_prompt(
             list(request.prompt_token_ids or []),
             [f.identifier for f in request.mm_features],

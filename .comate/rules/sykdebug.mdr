@@ -1,0 +1,7 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+阅读分析文件的时候，忽略所有 前缀了sykdebug 的注释，不要因为它们影响你对整个代码文件的理解
+前缀了sykdebug的注释，只是记录我对代码若干疑惑点，并非对代码功能的正式注释
