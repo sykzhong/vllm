@@ -64,7 +64,7 @@ def main():
         out_file = "decode_output.txt"
 
     llm = LLM(
-        model="/root/shiyukun/models/Qwen/Qwen3-0.6B",
+        model="facebook/opt-125m",
         enforce_eager=True,
         gpu_memory_utilization=0.8,
         max_num_batched_tokens=64,

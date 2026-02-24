@@ -238,6 +238,7 @@ class DecodeBenchConnectorScheduler:
 
         # Calculate how many blocks we need to fill
         # num_external_tokens are the tokens we said we'd provide
+        # sykdebug: 向上取整，保障至少填充完所有tokens
         num_blocks_to_fill = cdiv(num_external_tokens, self.block_size)
 
         # Extract the first num_blocks_to_fill blocks from each group
@@ -309,6 +310,7 @@ class DecodeBenchConnectorWorker:
         # For simplicity, assume all layers belong to group 0 (standard attention)
         # For MLA models with multiple groups, the metadata will handle the mapping
         # We just need to fill the blocks specified in the metadata
+        # sykdebug: 支持不同的层使用不同的kv接口
         self.group_to_layers = {0: list(kv_caches.keys())}
 
         logger.debug(

@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -204,6 +210,7 @@ class TestUpdateConnectorOutput:
         """Test that method returns early when kv_cache_events is None."""
         connector_output = KVConnectorOutput(kv_cache_events=None)
 
+        # sykdebug: 将 Worker 端产生的信息同步到 Scheduler 端的 Connector
         mock_connector.update_connector_output(connector_output)
 
         assert mock_connector._kv_cache_events is None
@@ -472,6 +479,7 @@ class TestTakeEvents:
         mock_connector._kv_cache_events = kv_events
 
         # Take events
+        # sykdebug: take_event只通报所有worker都成功的事件
         events = list(mock_connector.take_events())
 
         # Only the common event should be yielded
@@ -500,6 +508,7 @@ class TestTakeEvents:
         assert mock_connector._kv_cache_events is None
 
         # Second call with no events
+        # sykdebug: 在进行take_events后会将_kv_cache_events清空，所以events不可见
         events2 = list(mock_connector.take_events())
         assert events2 == []
 
@@ -618,6 +627,8 @@ class TestIntegrationScenarios:
 
         # Take events (should only get common events)
         taken_events = list(mock_connector.take_events())
+        
+        logger.info(f"sykdebug: taken_events={taken_events}")
 
         # With aggregation, only events reported by both workers should be present
         # In this case, hash_common was reported by both

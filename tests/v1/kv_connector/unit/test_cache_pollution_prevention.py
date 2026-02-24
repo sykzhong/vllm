@@ -7,6 +7,9 @@ test that invalid blocks are evicted from prefix cache to prevent pollution.
 verifies that when sync-loading fails, invalid blocks are removed from the
 prefix cache hash table so future requests cannot match and reuse corrupted data.
 """
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 from collections.abc import Callable
 from unittest.mock import Mock
@@ -73,6 +76,7 @@ def test_invalid_blocks_evicted_prevents_cache_pollution(
     req_num_new_matched_tokens = {
         request1.request_id: num_external_computed_tokens,
     }
+    logger.debug(f"sykdebug: req_num_new_matched_tokens={req_num_new_matched_tokens}")
 
     # mock connector indicating sync load
     fail_scheduler.connector = Mock()
@@ -145,6 +149,7 @@ def test_invalid_blocks_evicted_prevents_cache_pollution(
         )
 
     # invalid blocks: verify they're not in the cached_block_hash_to_block map
+    # sykdebug: 这里验证了相关invalid内容的查找入口也被干掉
     cached_blocks = (
         fail_scheduler.kv_cache_manager.block_pool.cached_block_hash_to_block
     )

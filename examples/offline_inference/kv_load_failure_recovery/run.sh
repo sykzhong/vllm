@@ -12,10 +12,10 @@ rm -rf "$SHARED_STORAGE_DIR"
 rm -f "$PREFILL_OUTPUT" "$DECODE_OUTPUT" "$SYNC_DECODE_RECOVERED_OUTPUT" "$ASYNC_DECODE_RECOVERED_OUTPUT"
 
 # Run inference examples
-VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 python3 prefill_example.py > tmp_prefill.log
-VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 python3 decode_example.py > tmp_decode.log
-VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 python3 decode_example.py --simulate-failure > tmp_failure_sync.log 2>&1
-VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 python3 decode_example.py --simulate-failure --async-load &> tmp_failure_async.log  2>&1
+VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 HF_ENDPOINT=https://hf-mirror.com python3 prefill_example.py > tmp_prefill.log
+VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 HF_ENDPOINT=https://hf-mirror.com python3 decode_example.py > tmp_decode.log
+VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 HF_ENDPOINT=https://hf-mirror.com python3 decode_example.py --simulate-failure > tmp_failure_sync.log 2>&1
+VLLM_ENABLE_V1_MULTIPROCESSING=0 CUDA_VISIBLE_DEVICES=0 HF_ENDPOINT=https://hf-mirror.com python3 decode_example.py --simulate-failure --async-load &> tmp_failure_async.log  2>&1
 
 # Compare outputs
 if ! cmp -s "$DECODE_OUTPUT" "$SYNC_DECODE_RECOVERED_OUTPUT"; then

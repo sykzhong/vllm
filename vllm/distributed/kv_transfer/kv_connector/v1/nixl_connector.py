@@ -709,6 +709,7 @@ class NixlConnectorScheduler:
                         request,
                         local_block_ids,
                     )
+                    logger.info(f"sykdebug: during update_state_after_alloc, _reqs_need_recv={self._reqs_need_recv}")
 
                 else:
                     logger.warning(
@@ -740,6 +741,9 @@ class NixlConnectorScheduler:
         # request is a chunked prefill, so we need to check if new blocks are added
         for req_id, new_block_id_groups, _ in yield_req_data(scheduler_output):
             req_to_save = self._reqs_need_save.get(req_id)
+            logger.info(f"sykdebug: during build_connector_meta, "
+                        f"req_id={req_id}, new_block_id_groups={new_block_id_groups}, "
+                        f"req_to_save={req_to_save}")
             if req_to_save is None or new_block_id_groups is None:
                 continue
             req = req_to_save
@@ -904,6 +908,7 @@ class NixlConnectorWorker:
         # KV Caches and nixl tracking data.
         self.device_type = current_platform.device_type
         self.kv_buffer_device: str = vllm_config.kv_transfer_config.kv_buffer_device
+        logger.info(f"sykdebug: device_type={self.device_type}, kv_buffer_device={self.kv_buffer_device}")
         if self.device_type not in _NIXL_SUPPORTED_DEVICE:
             raise RuntimeError(f"{self.device_type} is not supported.")
         elif self.kv_buffer_device not in _NIXL_SUPPORTED_DEVICE[self.device_type]:
@@ -1240,6 +1245,7 @@ class NixlConnectorWorker:
         fut = self._handshake_futures.get(remote_engine_id)
         if fut is None:
             assert meta.remote is not None
+            logger.debug(f"during _background_nixl_handshake, meta.tp_size={meta.tp_size}")
             fut = self._handshake_initiation_executor.submit(
                 self._nixl_handshake,
                 meta.remote.host,
@@ -1253,6 +1259,7 @@ class NixlConnectorWorker:
                 with self._handshake_lock:
                     del self._handshake_futures[eid]
                     try:
+                        # sykdebug: 这个remote_agents的key实际是remote prefill_tp_rank
                         self._remote_agents[eid] = f.result()
                     except Exception as e:
                         self._log_failure(
@@ -1269,6 +1276,8 @@ class NixlConnectorWorker:
             try:
                 # check if handshake succeeded
                 f.result()
+                logger.info(f"sykdebug: during _background_nixl_handshake, "
+                            f"finish _nixl_handshake for req_id={req_id}, put it to _ready_requests")
                 self._ready_requests.put(entry)
             except Exception as e:
                 # handshake failed - mark blocks as invalid
@@ -1286,7 +1295,7 @@ class NixlConnectorWorker:
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Register the KV Cache data in nixl."""
-
+        # sykdebug: 描述和管理 本地/远程 TPWorker之间的kvCache拓扑映射关系，解决诸如 PD节点TP异构的问题
         self.kv_topo = TpKVTopology(
             tp_rank=self.tp_rank,
             engine_id=self.engine_id,
@@ -1297,6 +1306,7 @@ class NixlConnectorWorker:
             attn_backend=self.attn_backend,
             tensor_shape=next(iter(kv_caches.values())).shape,
         )
+        # sykdebug: 用于保障PD节点间格式绝对兼容，在handshake期间校验
         self.compat_hash = compute_nixl_compatibility_hash(
             self.vllm_config, self.backend_name, self.kv_topo.cross_layers_blocks
         )
@@ -1348,8 +1358,9 @@ class NixlConnectorWorker:
                 base_addr = cache.data_ptr()
                 if base_addr in seen_base_addresses:
                     continue
-
+                
                 kernel_block_size = cache.shape[self.kv_topo.block_size_position]
+                # sykdebug: 用户配置的block_size可能和attn的block_size不同，支持映射转换
                 if self.block_size != kernel_block_size:
                     logger.info_once(
                         "User-specified logical block size (%s) does not match"
@@ -1392,7 +1403,7 @@ class NixlConnectorWorker:
                 caches_data.append(
                     (base_addr, curr_tensor_size_bytes, self.device_id, "")
                 )
-
+        # sykdebug: 每层大小去重后的结果
         logger.debug(
             "Different block lengths collected: %s", set(self.block_len_per_layer)
         )
@@ -1492,6 +1503,8 @@ class NixlConnectorWorker:
         assert self.kv_topo is not None
 
         block_size_ratio = self.block_size // block_size
+        logger.debug(f"sykdebug: during register_local_xfer_handler, self.block_size={self.block_size}, "
+                     f"block_size={block_size}, block_size_ratio={block_size_ratio}")
         blocks_data = []
         for i, base_addr in enumerate(self.seen_base_addresses):
             # The new block_len is using prefill block_len;
@@ -1517,6 +1530,8 @@ class NixlConnectorWorker:
                     # Register addresses for V cache (K registered first).
                     v_addr = addr + kv_block_len
                     blocks_data.append((v_addr, kv_block_len, self.device_id))
+        
+        logger.debug(f"sykdebug: during register_local_xfer_handler, blocks_data={blocks_data}")
         logger.debug(
             "Created %s blocks for src engine %s and rank %s on device id %s",
             len(blocks_data),
@@ -1687,6 +1702,7 @@ class NixlConnectorWorker:
                 # self.block_len == remote_block_len//tp_ratio bytes.
                 addr = base_addr + block_offset + rank_offset
                 # (addr, len, device id)
+                # sykdebug: addr表示对应block在prefill端的地址，local_block_len表示读取的字节数
                 blocks_data.append((addr, local_block_len, nixl_agent_meta.device_id))
 
             if self.kv_topo.is_kv_layout_blocks_first:
@@ -1710,6 +1726,7 @@ class NixlConnectorWorker:
         # Register with NIXL.
         descs = self.nixl_wrapper.get_xfer_descs(blocks_data, self.nixl_memory_type)
         self.dst_xfer_side_handles[engine_id][remote_tp_rank] = (
+            # sykdebug: 一个整数句柄，后续传输时用于指定目标端  
             self.nixl_wrapper.prep_xfer_dlist(remote_agent_name, descs)
         )
 
@@ -2013,12 +2030,19 @@ class NixlConnectorWorker:
                     -tp_ratio if n_consumers > self.world_size else 1
                 )
 
+                
                 self.consumer_notification_counts_by_req[req_id] += 1
+                logger.info(f"sykdebug: during _get_new_notifs, n_consumers={n_consumers}, "
+                            f"kv_topo.tp_size={self.kv_topo.tp_size}, tp_ratio={tp_ratio}, "
+                            f"consumers_per_producer={consumers_per_producer}, "
+                            f"consumer_notification_counts_by_req={self.consumer_notification_counts_by_req}")
                 # Wait all consumers (D) to be done reading before freeing.
                 if (
                     self.consumer_notification_counts_by_req[req_id]
                     == consumers_per_producer
                 ):
+                    logger.info(f"sykdebug: during _get_new_notifs, begin to remove req_id={req_id} "
+                                f"from reqs_to_process and reqs_to_send, and add to notified_req_ids")
                     notified_req_ids.add(req_id)
                     del self.consumer_notification_counts_by_req[req_id]
                     self._reqs_to_process.remove(req_id)
@@ -2039,6 +2063,7 @@ class NixlConnectorWorker:
             for handle in handles:
                 try:
                     xfer_state = self.nixl_wrapper.check_xfer_state(handle)
+                    logger.info(f"sykdebug: during _pop_done_transfers, for req_id={req_id}, handle={handle}, xfer_state={xfer_state}")
                     if xfer_state == "DONE":
                         # Get telemetry from NIXL
                         res = self.nixl_wrapper.get_xfer_telemetry(handle)
@@ -2092,7 +2117,10 @@ class NixlConnectorWorker:
         Start loading by triggering non-blocking nixl_xfer.
         We check for these trnxs to complete in each step().
         """
+        logger.info(f"sykdebug: begin to start_load_kv, len(reqs_to_recv)={len(metadata.reqs_to_recv)}")
         for req_id, meta in metadata.reqs_to_recv.items():
+            # sykdebug: local表示decode节点本地，是写入的目标位置；remote是prefill
+            # sykdebug: 测试用例中，logical 和 kernel block id是一一对应的，不需要映射
             meta.local_physical_block_ids = self._logical_to_kernel_block_ids(
                 meta.local_block_ids
             )
@@ -2100,6 +2128,8 @@ class NixlConnectorWorker:
             meta.remote.block_ids = self._logical_to_kernel_block_ids(
                 meta.remote.block_ids
             )
+            logger.info(f"sykdebug: during start_load_kv, meta.local_physical_block_ids={meta.local_physical_block_ids}, "
+                        f"meta.remote.block_ids={meta.remote.block_ids}, self._remote_agents={self._remote_agents}")
             remote_engine_id = meta.remote.engine_id
             logger.debug(
                 "start_load_kv for request %s from remote engine %s. "
@@ -2115,14 +2145,21 @@ class NixlConnectorWorker:
                 # Initiate handshake with remote engine to exchange metadata.
                 with self._handshake_lock:
                     if remote_engine_id not in self._remote_agents:
+                        logger.info(f"sykdebug: during start_load_kv, remote_engine_id={remote_engine_id} "
+                                    f"not in _remote_agents, begin to shake hands with it")
                         self._background_nixl_handshake(req_id, remote_engine_id, meta)
                         continue
 
             # Handshake already completed, start async read xfer.
+            logger.info(f"sykdebug: during start_load_kv, handshake for remote_engine_id={remote_engine_id} finished, "
+                        f"begin to _read_blocks_for_req")
             self._read_blocks_for_req(req_id, meta)
 
         # Start transfers for requests whose handshakes have now finished.
+        # sykdebug: handshake结束后，会向_read_requests队列中推送对应的req
         while not self._ready_requests.empty():
+            # sykdebug: get_nowait类似pop操作，因此会逐渐清空
+            logger.info(f"sykdebug: during start_load_kv, _ready_requests not empty, begin to _read_blocks_for_req")
             self._read_blocks_for_req(*self._ready_requests.get_nowait())
 
         # Keep around the requests that have been part of a batch. This is
@@ -2151,6 +2188,8 @@ class NixlConnectorWorker:
             meta.remote.engine_id
         )
         tp_ratio = self.kv_topo.tp_ratio_from_engine_id(meta.remote.engine_id)
+        logger.info(f"sykdebug: during _read_blocks_for_req, for request {req_id}, "
+                    f"remote.engine_id={meta.remote.engine_id}, remote_ranks={remote_ranks}, tp_ratio={tp_ratio}")
         # D may have to perform multiple reads from different remote ranks.
         for i, remote_rank in enumerate(remote_ranks):
             if self.use_mla and tp_ratio < 0 and i > 0:
@@ -2174,6 +2213,7 @@ class NixlConnectorWorker:
                 # reads. Get the memory chunk onto which we will write to.
                 local_xfer_side_handle = self.src_xfer_handles_by_tp_ratio[tp_ratio][i]
             else:
+                # sykdebug: prefill block_size < decode block_size，使用更小的粒度进行匹配
                 # Single read from remote, we write to the whole memory region.
                 # Also handle remote block size different from local block size.
                 local_xfer_side_handle = self.src_xfer_handles_by_block_size[
@@ -2184,6 +2224,10 @@ class NixlConnectorWorker:
             remote_xfer_side_handle = self.dst_xfer_side_handles[meta.remote.engine_id][
                 remote_rank
             ]
+            logger.info(f"sykdebug: during _read_blocks_for_req, local_xfer_side_handle={local_xfer_side_handle}, "
+                        f"src_xfer_handles_by_block_size={self.src_xfer_handles_by_block_size}, "
+                        f"remote_xfer_side_handle={remote_xfer_side_handle}, "
+                        f"local_blocks_ids={meta.local_physical_block_ids}")
             self._read_blocks(
                 request_id=req_id,
                 dst_engine_id=meta.remote.engine_id,
@@ -2345,6 +2389,7 @@ class NixlConnectorWorker:
             )
 
             # Begin async xfer.
+            logger.info(f"sykdebug: during _read_blocks, for request_id={request_id}, begin async xfer, to local_block_ids={local_block_ids}, transfer handle={handle}")
             self.nixl_wrapper.transfer(handle)
 
             # Use handle to check completion in future step().

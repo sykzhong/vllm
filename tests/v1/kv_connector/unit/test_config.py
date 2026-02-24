@@ -34,6 +34,7 @@ def test_kv_connector(
 
     vllm_config = VllmConfig(
         cache_config=CacheConfig(
+            # sykdebug: 根据kv_offloading_backend会实现expect_backend(kv_transfer)的指定 
             kv_offloading_backend=kv_offloading_backend,
             kv_offloading_size=kv_offloading_size,
         ),
@@ -45,6 +46,7 @@ def test_kv_connector(
 
     # No KV transfer config expected
     if expected_backend is None:
+        # sykdebug: kv_offloading_size为空，无法正常初始化得到kvoffload kv transfer，因此第四组数据为none
         assert vllm_config.kv_transfer_config is expected_backend
         return
 
@@ -54,6 +56,7 @@ def test_kv_connector(
     assert kv_transfer_config.kv_connector == expected_backend
     assert kv_transfer_config.kv_role == "kv_both"
 
+    # sykdebug: OffloadingConnector 轻量级原型实现; LMCache依赖外部库，更完善，支持cpu、磁盘、分布式缓存等
     if kv_offloading_backend == "native":
         assert kv_connector_extra_config["cpu_bytes_to_use"] == expected_bytes
         # Existing config should be preserved

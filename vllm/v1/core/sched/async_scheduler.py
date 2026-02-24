@@ -22,6 +22,12 @@ class AsyncScheduler(Scheduler):
                 request.use_structured_output and request.num_output_placeholders > 0
             )
             cur_num_spec_tokens = len(spec_decode_tokens.get(req_id, ()))
+            
+            logger.info(f"sykdebug: begin _update_after_schedule in asyncScheduler, for req_id={req_id}, "
+                        f"num_computed_tokens={request.num_computed_tokens}, num_tokens={request.num_tokens}, "
+                        f"request.num_output_placeholders={request.num_output_placeholders}, "
+                        f"cur_num_spec_tokens={scheduler_output.scheduled_spec_decode_tokens}, "
+                        f"len(request.spec_token_ids)={len(request.spec_token_ids)}")
             if (
                 request.num_computed_tokens
                 == request.num_tokens
@@ -34,6 +40,9 @@ class AsyncScheduler(Scheduler):
                 # Add placeholders for the new tokens in spec_token_ids.
                 # We will update the actual spec token ids in the worker process.
                 request.spec_token_ids = [-1] * self.num_spec_tokens
+                logger.info(f"sykdebug: after _update_after_schedule in asyncScheduler, req_id={req_id}, "
+                            f"request.num_output_placeholders={request.num_output_placeholders}, "
+                            f"len(request.spec_token_ids)={len(request.spec_token_ids)}")
 
         scheduler_output.has_structured_output_requests = has_structured_output_requests
         scheduler_output.pending_structured_output_tokens = (
@@ -56,6 +65,8 @@ class AsyncScheduler(Scheduler):
 
         # Update the number of output placeholders.
         request.num_output_placeholders -= len(new_token_ids)
+        logger.info(f"sykdebug: after _update_request_with_output in asyncScheduler, "
+                    f"request.num_output_placeholders={request.num_output_placeholders}, new_token_ids={new_token_ids}")
         assert request.num_output_placeholders >= 0
 
         # Cache the new tokens. Preempted requests should be skipped.

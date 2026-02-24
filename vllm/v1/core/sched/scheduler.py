@@ -292,6 +292,9 @@ class Scheduler(SchedulerInterface):
             # output placeholders for PP.
             # TODO: support PP + async scheduling without this limit
             if self.use_pp and request.num_output_placeholders > 0:
+                logger.info(f"sykdebug: request.request_id={request.request_id}, "
+                            f"num_output_placeholders={request.num_output_placeholders}, use_pp={self.use_pp}, "
+                            f"will not schedule it")
                 req_index += 1
                 continue
 
@@ -316,6 +319,10 @@ class Scheduler(SchedulerInterface):
                 + request.num_output_placeholders
                 - request.num_computed_tokens
             )
+            logger.info(f"sykdebug: in running queue, request.request_id={request.request_id}, "
+                        f"num_new_tokens={num_new_tokens}, num_tokens_with_spec={request.num_tokens_with_spec}, "
+                        f"num_output_placeholders={request.num_output_placeholders}, "
+                        f"num_computed_tokens={request.num_computed_tokens}")
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
             num_new_tokens = min(num_new_tokens, token_budget)
@@ -821,7 +828,7 @@ class Scheduler(SchedulerInterface):
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
-        logger.info(f"sykdebug: end schedule, return scheduler_output")
+        logger.info(f"sykdebug: end schedule, return scheduler_output={scheduler_output}")
         return scheduler_output
 
     def _preempt_request(self, request: Request, timestamp: float) -> None:
@@ -1124,6 +1131,8 @@ class Scheduler(SchedulerInterface):
         scheduler_output: SchedulerOutput,
         model_runner_output: ModelRunnerOutput,
     ) -> dict[int, EngineCoreOutputs]:
+        logger.info(f"sykdebug: begin to execute update_from_output, scheduler_output={scheduler_output}, "
+                    f"model_runner_output={model_runner_output}")
         sampled_token_ids = model_runner_output.sampled_token_ids
         logprobs = model_runner_output.logprobs
         prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
@@ -1212,6 +1221,7 @@ class Scheduler(SchedulerInterface):
             status_before_stop = request.status
 
             # Check for stop and update request status.
+            logger.info(f"sykdebug: during update_from_output, for req_id={req_id}, new_token_ids={new_token_ids}")
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(
                     request, new_token_ids
@@ -1772,6 +1782,7 @@ class Scheduler(SchedulerInterface):
             num_computed_tokens = len(block_ids) * self.block_size
             # Handle the case where num request tokens less than one block.
             num_computed_tokens = min(num_computed_tokens, request.num_tokens)
+            # sykdebug: 这里进行-1目的：必须保留最后一个 prompt token 进行 forward，才能生成第一个 output token。
             if num_computed_tokens == request.num_tokens:
                 num_computed_tokens -= 1
             # This will cache the blocks iff caching is enabled.
@@ -1877,6 +1888,7 @@ class Scheduler(SchedulerInterface):
                             f"in invalid_block_ids, set is_affected=true")
                 is_affected = True
 
+                # sykdebug: 这里跳过是因为在共享block的前提下，仅由第一个req进行recompute，第二个req不需要截断
                 if block_id in marked_invalid_block_ids:
                     # This invalid block is shared with a previous request
                     # and was already marked for recomputation.
@@ -1911,7 +1923,7 @@ class Scheduler(SchedulerInterface):
 
             if is_affected:
                 if not marked_invalid_block:
-                    # sykdebug: 怀疑这里导致了kvconnector失败的共享的req没有办法被正常跳过
+                    # sykdebug: 核心设计：共享invalid block 有第一个req负责recompute
                     # All invalid blocks of this request are shared with
                     # previous requests and will be recomputed by them.
                     # Revert to considering only cached tokens as computed.

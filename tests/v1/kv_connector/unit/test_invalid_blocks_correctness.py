@@ -11,6 +11,10 @@ These tests verify correct behavior in three scenarios:
 3. Async recompute case: Invalid blocks should not be cached after transfer
 """
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 from collections.abc import Callable
 from unittest.mock import Mock
 
@@ -105,6 +109,8 @@ def test_sync_recompute_blocks_not_freed_for_running_requests(
 
     # store original num_computed_tokens for comparison
     original_num_computed_tokens = request.num_computed_tokens
+    logger.info(f"sykdebug: after schedule, the original_num_computed_tokens={request.num_computed_tokens}, "
+                f"req_block_ids={req_block_ids}, invlid_block_ids={invalid_block_ids}")
 
     model_runner_output = create_model_runner_output(
         [request],
@@ -115,7 +121,7 @@ def test_sync_recompute_blocks_not_freed_for_running_requests(
     outputs = recompute_scheduler.update_from_output(
         scheduler_output, model_runner_output
     )
-
+    
     # critical assertions for recompute case:
 
     # 1. request should still be RUNNING (not finished, not aborted)
@@ -125,6 +131,8 @@ def test_sync_recompute_blocks_not_freed_for_running_requests(
 
     # 2. num_computed_tokens should be truncated to first invalid block
     expected_truncated_tokens = invalid_block_idx * recompute_scheduler.block_size
+    
+    logger.info(f"sykdebug: after worker, the expected_truncated_tokens={expected_truncated_tokens}")
     assert request.num_computed_tokens == expected_truncated_tokens, (
         f"num_computed_tokens should be truncated to {expected_truncated_tokens}, "
         f"got {request.num_computed_tokens}"
@@ -230,6 +238,7 @@ def test_sync_fail_invalid_blocks_evicted(fail_scheduler: Scheduler):
     # verify the block is in the block pool before we report it as invalid
     block = fail_scheduler.kv_cache_manager.block_pool.blocks[invalid_block_id]
     assert block is not None
+    logger.info(f"sykdebug: for block of invalid_block_ids={invalid_block_ids}, block.block_hash={block.block_hash}")
 
     # report invalid blocks - request should fail
     model_runner_output = create_model_runner_output(

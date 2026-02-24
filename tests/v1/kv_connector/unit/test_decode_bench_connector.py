@@ -6,6 +6,9 @@ Unit tests for DecodeBenchConnector.
 Tests the functionality of the DecodeBenchConnector which fills KV cache
 with dummy values for decode performance benchmarking.
 """
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 import pytest
 import torch
@@ -139,6 +142,7 @@ def test_decode_bench_connector_basic():
     block_size = 16
     num_gpu_blocks = 100
 
+    # sykdebug: 模拟跳过prefill阶段，在decode阶段使用自生成填充的方式，模拟kvload
     runner = DecodeBenchTestRunner(block_size=block_size, num_gpu_blocks=num_gpu_blocks)
 
     # Create a request with multiple blocks worth of tokens
@@ -375,6 +379,7 @@ def test_decode_bench_connector_concurrent_requests():
     req3 = runner.new_request([3] * (block_size * 1))
 
     # Run first step - all requests should be filled concurrently
+    logger.info(f"sykdebug: begin to run_single_step")
     _, metadata = runner.run_single_step()
 
     # All three requests should be in the metadata
@@ -407,6 +412,7 @@ def test_decode_bench_connector_concurrent_requests():
                 assert torch.allclose(block_data, torch.tensor(0.015))
 
     # Run second step - should NOT fill again (already filled)
+    logger.info(f"sykdebug: begin to run_single_step")
     _, metadata2 = runner.run_single_step()
     assert len(metadata2.reqs_to_fill) == 0
 

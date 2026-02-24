@@ -210,6 +210,7 @@ def create_request(
             remote_port=1234,
         )
 
+    # sykdebug: 对于prefill端，强制设置 max_tokens 为1，即基本不生成新token，强制只做prefill
     max_tokens = 1 if do_remote_decode else max_tokens
     sampling_params = SamplingParams(max_tokens=max_tokens)
 

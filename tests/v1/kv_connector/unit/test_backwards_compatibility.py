@@ -9,6 +9,10 @@ implemented with the old signature continue to work:
 - New signature: __init__(self, vllm_config, role, kv_cache_config)
 """
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -135,6 +139,7 @@ def test_external_old_signature_factory_instantiation(role):
     via kv_connector_module_path are correctly instantiated with backwards
     compatibility support.
     """
+    logger.info(f"sykdebug: begin to test_external_old_signature_factory_instantiation")
     vllm_config = create_vllm_config()
     vllm_config.kv_transfer_config.kv_connector = "OldStyleTestConnector"
     vllm_config.kv_transfer_config.kv_connector_module_path = (
@@ -143,7 +148,8 @@ def test_external_old_signature_factory_instantiation(role):
 
     scheduler = create_scheduler(vllm_config)
     kv_cache_config = scheduler.kv_cache_config
-
+    logger.info(f"sykdebug: kv_cache_config={kv_cache_config}, schduler.connector={scheduler.connector}")
+ 
     connector = KVConnectorFactory.create_connector(vllm_config, role, kv_cache_config)
 
     assert connector is not None

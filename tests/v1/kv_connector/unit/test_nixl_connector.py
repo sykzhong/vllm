@@ -17,6 +17,8 @@ import pytest
 import ray
 import torch
 
+from vllm.logger import init_logger
+
 from vllm import LLM
 from vllm.config import KVTransferConfig, set_current_vllm_config
 from vllm.distributed.kv_transfer.kv_connector.utils import (
@@ -50,6 +52,7 @@ from vllm.platforms import current_platform
 from vllm.platforms.interface import Platform
 from vllm.sampling_params import SamplingParams
 from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
+from vllm.v1.attention.backends.cpu_attn import CPUAttentionBackend
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.output_processor import OutputProcessor
 from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheConfig, KVCacheTensor
@@ -60,6 +63,7 @@ from vllm.v1.worker.utils import AttentionGroup
 
 from .utils import create_request, create_scheduler, create_vllm_config
 
+logger = init_logger(__name__)
 
 @pytest.fixture(scope="module", autouse=True)
 def clear_kv_transfer():
@@ -175,6 +179,7 @@ class FakeNixlWrapper:
         return uuid.uuid4().int
 
     def transfer(self, handle: int) -> str:
+        # sykdebug: read_blocks会调用对应结果
         return "PROC"
 
     def get_xfer_telemetry(self, handle: int) -> dict:
@@ -186,6 +191,8 @@ class FakeNixlWrapper:
 
     def set_cycles_before_xfer_done(self, cycles: int):
         """Set the number of cycles before a transfer is considered done."""
+        logger.info(f"sykdebug: after set_cycles_before_xfer_done, "
+                    f"FakeNixlWrapper._cycles_before_xfer_done={self._cycles_before_xfer_done}")
 
 
 @contextlib.contextmanager
@@ -253,6 +260,7 @@ def test_basic_interface():
 
     # Remote Prefill, triggers NixlConnectorMetadata.
     scheduler_output = scheduler.schedule()
+    logger.info(f"sykdebug: for request_id={request_id}, status={request.status}")
     kv_connector_metadata = scheduler_output.kv_connector_metadata
     assert kv_connector_metadata is not None
     assert isinstance(kv_connector_metadata, NixlConnectorMetadata)
@@ -308,6 +316,7 @@ def test_prompt_less_than_block_size():
     "vllm.distributed.kv_transfer.kv_connector.v1.nixl_connector.NixlWrapper",
     FakeNixlWrapper,
 )
+# sykdebug: 这里用了dist_init，会检索并初始化dist_environment；这是因为对应connector依赖分布式的参数，没初始化会报错
 def test_kv_transfer_handshake(dist_init):
     """Unit test for basic NixlConnector interface functionality."""
     from vllm.config import set_current_vllm_config
@@ -318,6 +327,7 @@ def test_kv_transfer_handshake(dist_init):
     vllm_config = create_vllm_config()
     # in case the test runs on non-GPU machine
     vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
+    logger.info(f"sykdebug: begin to make scheduler")
     scheduler = create_scheduler(vllm_config)
 
     with set_current_vllm_config(vllm_config):
@@ -326,8 +336,14 @@ def test_kv_transfer_handshake(dist_init):
 
         # Prefill connector will register KV cache to populate proper handshake
         # metadata.
+        logger.info(f"sykdebug: begin to build prefill_connector worker")
         prefill_connector = NixlConnector(vllm_config, KVConnectorRole.WORKER)
-        kv_cache_shape = FlashAttentionBackend.get_kv_cache_shape(
+        """
+        sykdebug: vllmConfig中没有显式指定attn backend; 在macOS运行该单测的时候, 会默认采用CPUAttn, 跟flash attn的维度语义不同
+        会导致后续误判，因此这里将attn backend改成CPUAttn
+        """
+        # sykdebug: 由于在macOS运行该单测
+        kv_cache_shape = CPUAttentionBackend.get_kv_cache_shape(
             num_blocks=2, block_size=16, num_kv_heads=4, head_size=64
         )
         shared_tensor = torch.zeros(*kv_cache_shape, dtype=torch.float16)
@@ -337,10 +353,13 @@ def test_kv_transfer_handshake(dist_init):
             "layer1": unique_tensor,
             "layer2": shared_tensor,
         }
+        logger.info(f"sykdebug: prefill_connector begin to register kv_caches")
         prefill_connector.register_kv_caches(kv_caches)
 
         # Simulate EngineCore initialization that would gather connector
         # metadata from all workers
+        logger.info(f"sykdebug: prefill_connector begin to get_handshake_metadata")
+        # sykdebug: 手动抽取出prefill connector的metadata，直接手动传播给scheduler的connector，模拟了scheduler从worker中获取的过程
         metadata = prefill_connector.get_handshake_metadata()
 
         # metadata is a NixlHandshakePayload, decode it to get NixlAgentMetadata
@@ -351,6 +370,7 @@ def test_kv_transfer_handshake(dist_init):
         # dict[int, KVConnectorHandshakeMetadata], where the first key is
         # the dp_rank, the second key is the tp_rank.
         scheduler_connector = scheduler.get_kv_connector()
+        # sykdebug: p节点有两个进程 scheduler进程会从worker进程中获取metadata，然后启动listener，负责和decoder handshake
         scheduler_connector.set_xfer_handshake_metadata({0: metadata})
 
         # Simulate a request that finishes prefill, which returns
@@ -367,6 +387,7 @@ def test_kv_transfer_handshake(dist_init):
         )
         request.status = RequestStatus.FINISHED_LENGTH_CAPPED
         delay, kv_connector_metadata = scheduler.get_kv_connector().request_finished(
+            # sykdebug: 这里的block_ids表示prefill端的kv cache block编号
             request, [0, 1, 2]
         )
         assert delay
@@ -423,6 +444,7 @@ class FakeNixlConnectorWorker(NixlConnectorWorker):
             attn_backend=self.attn_backend,
             tensor_shape=test_shape,
         )
+        logger.info(f"sykdebug: during FakeNixlConnectorWorker.__init__, _tp_size={self._tp_size}, world_size={self.world_size}")
 
         self.compat_hash = compute_nixl_compatibility_hash(
             self.vllm_config, self.backend_name, self.kv_topo.cross_layers_blocks
@@ -449,6 +471,7 @@ class FakeNixlConnectorWorker(NixlConnectorWorker):
         tp_ratio = self.kv_topo.tp_ratio(remote_tp_size)
         if remote_tp_size > self.world_size:
             # P TP > D TP case, block_len of remote is smaller
+            # sykdebug: 这里根据本地的tp_ratio去缩放remote_block_lens，保持tp*block_lens不变，从decode本地反推出远端prefill的情况
             remote_block_lens = [
                 block_len // (-tp_ratio) for block_len in remote_block_lens
             ]
@@ -479,6 +502,10 @@ class FakeNixlConnectorWorker(NixlConnectorWorker):
                 remote_tp_size=remote_tp_size,
             )
             remote_agents[remote_tp_rank] = remote_agent_name
+        
+        logger.info(f"sykdebug: after fake _nixl_handshake, self.world_size={self.world_size}, tp_ratio={tp_ratio}, "
+                    f"self.block_len_per_layer={self.block_len_per_layer}, remote_block_lens={remote_block_lens}, "
+                    f"num_handshakes={num_hanshakes}, remote_tp_size={remote_tp_size}")
         return remote_agents
 
 
@@ -502,18 +529,24 @@ class TestNixlHandshake:
         should handle it correctly (wait for all transfers to be done).
         """
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
 
         request_id = "req_id"
 
         # Test worker role in decode server.
+        # sykdebug: 这里进行了两次初始化，以后一次的为准
         connector = NixlConnector(vllm_config, KVConnectorRole.WORKER)
         connector.connector_worker = FakeNixlConnectorWorker(
             vllm_config, connector.engine_id, hand_shake_latency=0
         )
         assert isinstance(connector.connector_worker.nixl_wrapper, FakeNixlWrapper)
+        logger.info(f"sykdebug: finish mock connector_worker")
         worker = connector.connector_worker
+        # sykdebug: 这个看着是失效的
         worker.nixl_wrapper.set_cycles_before_xfer_done(3)
         # simulate handshake
+        # sykdebug: 远端（prefill）rank0 的用于传输的句柄是1
         worker.dst_xfer_side_handles = {
             FakeNixlConnectorWorker.REMOTE_ENGINE_ID: {0: 1}
         }
@@ -550,6 +583,7 @@ class TestNixlHandshake:
                 virtual_engine=0,
             )
             _before_load = time.perf_counter()
+            # sykdebug: 初次运行的时候，还未握手，因此进行handshake；handshake期间非阻塞，无输出，正常；后续可能再处理
             connector.start_load_kv(dummy_ctx)
             _after_load = time.perf_counter()
             assert _after_load - _before_load < 0.1, (
@@ -557,6 +591,7 @@ class TestNixlHandshake:
             )
 
             # Mimic logic in KVConnectorModelRunnerMixin._get_kv_connector_output.
+            # sykdebug: 完成建联、并处理了任务后，done_recving的队列非空。
             _, done_recving = connector.get_finished(finished_req_ids=set())
             if len(done_recving) > 0:
                 assert request_id in done_recving
@@ -587,8 +622,12 @@ class TestNixlHandshake:
         prefill_tp_size,
     ):
         """Test that NixlConnector's start_load_kv should be non-blocking."""
+        logger.info(f"sykdebug: begin test_async_load_kv, decode_tp_size={decode_tp_size}, prefill_tp_size={prefill_tp_size}")
 
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
+        # sykdebug: 这里有问题 tensor_parallel_size 并没有办法生效，无法影响decode_tp_size;通过强制修改完成对应生效
         vllm_config.parallel_config.tensor_parallel_size = decode_tp_size
 
         # Test worker role in decode server.
@@ -596,6 +635,11 @@ class TestNixlHandshake:
         connector.connector_worker = FakeNixlConnectorWorker(
             vllm_config, connector.engine_id
         )
+        
+        # sykdebug: 直接覆盖 _tp_size
+        connector.connector_worker.world_size = decode_tp_size
+        connector.connector_worker._tp_size[connector.engine_id] = decode_tp_size
+        
         metadata = NixlConnectorMetadata()
         metadata.add_new_req_to_recv(
             request_id="id",
@@ -606,7 +650,9 @@ class TestNixlHandshake:
                 "remote_request_id": "prefill-id",
                 "remote_host": "localhost",
                 "remote_port": 1234,
-                "remote_tp_size": prefill_tp_size,
+                # sykdebug: 这里有问题！！应该设定为tp_size才能识别
+                # "remote_tp_size": prefill_tp_size,
+                "tp_size": prefill_tp_size,
             },
         )
         connector.bind_connector_metadata(metadata)
@@ -644,8 +690,12 @@ class TestNixlHandshake:
         Verify remote TP > local TP handshake succeeds with different
         remote configurations.
         """
+        logger.info(f"sykdebug: begin test_prefill_tp_size_greater_than_decode_tp_size, local_tp_size={local_tp_size}")
 
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
+        # sykdebug: 强烈怀疑这里没有生效，待改动
         local_tp_size = 1
         vllm_config.parallel_config.tensor_parallel_size = local_tp_size
 
@@ -654,6 +704,10 @@ class TestNixlHandshake:
             vllm_config, connector.engine_id, hand_shake_latency=0
         )
         worker = connector.connector_worker
+        
+        # sykdebug: 新增的代码，让local_tp_size 正式生效
+        worker.world_size = local_tp_size
+        worker._tp_size[connector.engine_id] = local_tp_size
 
         # Minimal local registration params used by add_remote_agent
         worker.slot_size_per_layer = [4096]
@@ -664,6 +718,8 @@ class TestNixlHandshake:
 
         def check_handshake(remote_tp_size: int):
             tp_ratio = remote_tp_size // local_tp_size
+            logger.info(f"sykdebug: during check_handshake, remote_tp_size={remote_tp_size}, "
+                        f"local_tp_size={local_tp_size}, tp_ratio={tp_ratio}")
             assert set(remote_agents.keys()) == set(range(tp_ratio))
 
             remote_engine_id = worker.REMOTE_ENGINE_ID
@@ -710,6 +766,9 @@ class TestNixlHandshake:
         remote configurations for an MLA model.
         """
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
+        
         d_tp_size = 1
         p_tp_size = 2
 
@@ -745,6 +804,7 @@ class TestNixlHandshake:
         # Simulate a read notification coming from D with (tp=1, dp=2).
         notif = f"{req_id}:{d_tp_size}".encode()
         # D0-0->P0 notif
+        # sykdebug: 这里相当于模拟了外部的decode agent发送的建联通知
         conn_p0.connector_worker.nixl_wrapper.get_new_notifs = lambda: {
             "agent": [notif]
         }  # type: ignore[method-assign]
@@ -755,6 +815,7 @@ class TestNixlHandshake:
         # Trigger notification processing via get_finished().
         done_sending0, _ = conn_p0.get_finished(finished_req_ids=set())
         done_sending1, _ = conn_p1.get_finished(finished_req_ids=set())
+        logger.info(f"sykdebug: done_sending0={done_sending0}, done_sending1={done_sending1}")
         assert req_id in done_sending0 and req_id in done_sending1
 
         # E2E aggregation: ensure the aggregated output marks the request
@@ -788,6 +849,7 @@ class TestNixlHandshake:
             ),
         )
         aggregated = aggregator.aggregate([out0, out1], output_rank=0)
+        # sykdebug: 验证只有所有workers都完成发送/接收后，聚合器才会报告该请求完成
         assert aggregated.kv_connector_output is not None
         assert aggregated.kv_connector_output.finished_sending == {req_id}
 
@@ -810,6 +872,8 @@ class TestNixlHandshake:
         """Test that multiple start_load_kv calls should occur concurrently."""
 
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
 
         # Test worker role in decode server.
         connector = NixlConnector(vllm_config, KVConnectorRole.WORKER)
@@ -872,6 +936,8 @@ class TestNixlHandshake:
         This test is only relevant for heterogeneous TP.
         """
         vllm_config = create_vllm_config()
+        # in case the test runs on non-GPU machine
+        vllm_config.kv_transfer_config.kv_buffer_device = "cpu"
 
         # Mock TP world size to 2 to force heterogeneous TP when
         # remote_tp_size=1
@@ -1098,6 +1164,7 @@ def test_kv_connector_stats_aggregation():
     assert kv_connector_stats.num_successful_transfers == 6
     # Logging proc, call reduce() to get CLI-friendly stats.
     cli_stats = kv_connector_stats.reduce()
+    # sykdebug: 9/6
     assert cli_stats["Avg xfer time (ms)"] == 1500.0
     assert cli_stats["Avg post time (ms)"] == 1500.0
     assert cli_stats["Avg number of descriptors"] == 1.5

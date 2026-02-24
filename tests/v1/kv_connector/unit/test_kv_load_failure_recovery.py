@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 from collections.abc import Callable
 from unittest.mock import Mock
 
@@ -85,6 +90,8 @@ def test_async_load_failure(
     # Simulate a failure in loading some of request2 blocks.
     (req2_block_ids,) = scheduler.kv_cache_manager.get_block_ids(request2.request_id)
     invalid_block_ids = {req2_block_ids[i] for i in invalid_block_idxs}
+    
+    logger.info(f"sykdebug: invalid_block_idxs={invalid_block_idxs}, req2_block_ids={req2_block_ids}")
     model_runner_output = create_model_runner_output(
         reqs=[],
         finished_recving={request1.request_id, request3.request_id},
@@ -94,6 +101,7 @@ def test_async_load_failure(
 
     scheduler.update_from_output(scheduler_output, model_runner_output)
 
+    # sykdebug: 表明错误的截断仅在最小的invalid block就开始
     min_invalid_block_idx = min(invalid_block_idxs)
 
     assert len(scheduler.waiting) == 3
@@ -250,6 +258,10 @@ def test_sync_load_failure_with_shared_blocks(
     model_runner_output = create_model_runner_output(
         [request1, request2], invalid_block_ids=invalid_block_ids, use_eos=True
     )
+    
+    req2_block_ids= scheduler_output.scheduled_new_reqs[1].block_ids[0]
+    logger.info(f"sykdebug: req1_block_ids={req1_block_ids}, req2_block_ids={req2_block_ids}, "
+                f"invalid_block_idxs={invalid_block_idxs}")
 
     scheduler.update_from_output(scheduler_output, model_runner_output)
 

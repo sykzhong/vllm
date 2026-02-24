@@ -395,6 +395,7 @@ class TpKVTopology:
         ratio is flipped (remote_size/local_size) and the returned value is
         negative.
         """
+        logger.info(f"sykdebug: begin tp_ratio, self.tp_size={self.tp_size}, remote_tp_size={remote_tp_size}")
         if self.tp_size >= remote_tp_size:
             assert self.tp_size % remote_tp_size == 0, (
                 f"Local tensor parallel size {self.tp_size} is not divisible "
@@ -469,13 +470,17 @@ class TpKVTopology:
         self,
         remote_engine_id: EngineId,
     ) -> list[int]:
+        logger.debug(f"sykdebug: during get_target_remote_ranks_from_engine_id, "
+                     f"kv_topo.remote_tp_size={self.remote_tp_size}")
         remote_tp_size = self.remote_tp_size[remote_engine_id]
+        # sykdebug: 进行decode -> prefill的映射转换
         return self.get_target_remote_ranks(remote_tp_size)
 
 
 def get_current_attn_backend(vllm_config: VllmConfig):
     layer_type = cast(type[Any], AttentionLayerBase)
     layers = get_layers_from_vllm_config(vllm_config, layer_type, None)
+    logger.info(f"sykdebug: during get_current_attn_backend, layers={layers}")
     if layers:
         backend = next(iter(layers.values())).get_attn_backend()
     else:

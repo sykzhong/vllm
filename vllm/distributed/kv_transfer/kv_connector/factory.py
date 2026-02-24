@@ -49,6 +49,7 @@ class KVConnectorFactory:
         kv_transfer_config = config.kv_transfer_config
         if kv_transfer_config is None:
             raise ValueError("kv_transfer_config must be set to create a connector")
+        # sykdebug: compat_sig 表示向后兼容的签名，为true表示是老版本的接口
         connector_cls, compat_sig = cls._get_connector_class_with_compat(
             kv_transfer_config
         )
@@ -128,7 +129,8 @@ class KVConnectorFactory:
                     "Please update to include kv_cache_config as the second argument.",
                     connector_cls.__name__,
                 )
-            logger.info(f"sykdebug: during _get_connector_class_with_compat, connector_module={connector_module}, connector_name={connector_name}, connector_cls={connector_cls}")
+            logger.info(f"sykdebug: during _get_connector_class_with_compat, connector_module={connector_module}, "
+                        f"connector_name={connector_name}, connector_cls={connector_cls}, compat_sig={compat_sig}")
         return connector_cls, compat_sig
 
     @classmethod
